@@ -4,5 +4,12 @@ Hard-fork of the [Keras Non-Local Nets](https://github.com/titu1994/keras-non-lo
 
 ## Versions 
 
-1. [Keras Layer](https://github.com/andrewrgarcia/non-local-blocks/blob/main/nonlocals/keras/non_local.py) - from nonlocals.keras import NonLocalBlock 
-2. [PyTorch Module](https://github.com/andrewrgarcia/non-local-blocks/blob/main/nonlocals/torch/non_local.py) - from nonlocals.torch import NonLocalBlock 
+```python
+from nonlocals.keras import NonLocalBlock
+```
+[Keras Layer](https://github.com/andrewrgarcia/non-local-blocks/blob/main/nonlocals/keras/non_local.py)
+
+```python
+from nonlocals.torch import NonLocalBlock
+```
+[PyTorch Module](https://github.com/andrewrgarcia/non-local-blocks/blob/main/nonlocals/torch/non_local.py)
