@@ -1,8 +1,8 @@
-from tensorflow.keras.layers import Conv1D, Conv2D, Conv3D, Reshape, dot, Activation, Lambda, MaxPool1D, add
+from tensorflow.keras.layers import Conv1D, Conv2D, Conv3D, Reshape, Dot, Activation, Lambda, MaxPool1D, Add, Permute
 from tensorflow.keras import backend as K
 
 class NonLocalBlock:
-    def __init__(self, intermediate_dim=None, compression=2, mode='embedded', add_residual=True):
+    def __init__(self, intermediate_dim=None, compression=2, strides=1, mode='embedded', add_residual=True):
         """
         Initializes a NonLocalBlock instance.
 
@@ -10,8 +10,10 @@ class NonLocalBlock:
         ----------
         intermediate_dim: None / int
             The dimension of the intermediate representation. Can be `None` or a positive integer greater than 0. If `None`, computes the intermediate dimension as half of the input channel dimension.
-        compression: None or positive integer. 
-            Compresses the intermediate representation during the dot products to reduce memory consumption. Default is set to 2, which states halve the time/space/spatio-time dimension for the intermediate step. Set to 1 to prevent computation compression. None or 1 causes no reduction.
+        compression : float, optional
+            The factor by which to compress feature dimensions during pooling operations i.e. the pool_size. Defaults to 2, halving the feature dimensions.
+        strides : int, optional
+            The stride of the pooling operation. Defaults to 1, allowing for overlapping pooling windows.
         mode: str
             Mode of operation. Can be one of `embedded`, `gaussian`, `dot` or `concatenate`.
         add_residual: bool
@@ -19,6 +21,7 @@ class NonLocalBlock:
         """
         self.intermediate_dim = intermediate_dim
         self.compression = compression
+        self.strides = strides
         self.mode = mode
         self.add_residual = add_residual
 
@@ -44,11 +47,11 @@ class NonLocalBlock:
             self.compression = 1
 
         # check rank and calculate the input shape
-        rank = len(input_shape)
-        if rank not in [3, 4, 5]:
+        self.rank = len(input_shape)
+        if self.rank not in [3, 4, 5]:
             raise ValueError('Input dimension has to be either 3 (temporal), 4 (spatial) or 5 (spatio-temporal)')
 
-        elif rank == 3:
+        elif self.rank == 3:
             batchsize, dims, channels = input_shape
 
         else:
@@ -70,60 +73,48 @@ class NonLocalBlock:
             if self.intermediate_dim < 1:
                 raise ValueError('`intermediate_dim` must be either `None` or positive integer greater than 1.')
 
-        if self.mode == 'gaussian':  # Gaussian instantiation
+        if self.mode == 'gaussian':  # gaussian instantiation
             x1 = Reshape((-1, channels))(ip)  # xi
             x2 = Reshape((-1, channels))(ip)  # xj
-            f = dot([x1, x2], axes=2)
+            x2 = self.transpose_xj(x2)
+            f = Dot(axes=[self.rank-1, self.rank-1])([x1, x2])
             f = Activation('softmax')(f)
-
-        elif self.mode == 'dot':  # Dot instantiation
+        elif self.mode == 'dot':  # dot instantiation
             # theta path
-            theta = self._convND(ip, rank, self.intermediate_dim)
+            theta = self._convND(ip, self.intermediate_dim)
             theta = Reshape((-1, self.intermediate_dim))(theta)
-
             # phi path
-            phi = self._convND(ip, rank, self.intermediate_dim)
+            phi = self._convND(ip, self.intermediate_dim)
             phi = Reshape((-1, self.intermediate_dim))(phi)
-
-            f = dot([theta, phi], axes=2)
-
-            size = K.int_shape(f)
-
+            phi = self.transpose_xj(phi)
+            f = Dot(axes=[self.rank-1, self.rank-1])([theta, phi])
             # scale the values to make it size invariant
-            f = Lambda(lambda z: (1. / float(size[-1])) * z)(f)
-
-        elif self.mode == 'concatenate':  # Concatenation instantiation
+            f = Lambda(lambda z: (1. / float(K.int_shape(f)[-1])) * z)(f)  
+        elif self.mode == 'concatenate':  # concatenation instantiation
             raise NotImplementedError('Concatenate model has not been implemented yet')
-
         else:  # Embedded Gaussian instantiation
             # theta path
-            theta = self._convND(ip, rank, self.intermediate_dim)
+            theta = self._convND(ip, self.intermediate_dim)
             theta = Reshape((-1, self.intermediate_dim))(theta)
-
             # phi path
-            phi = self._convND(ip, rank, self.intermediate_dim)
+            phi = self._convND(ip, self.intermediate_dim)
             phi = Reshape((-1, self.intermediate_dim))(phi)
-
-            if self.compression > 1:
-                # shielded computation
-                phi = MaxPool1D(self.compression)(phi)
-
-            f = dot([theta, phi], axes=2)
+            phi = self.subsampling_trick(phi)
+            phi = self.transpose_xj(phi)
+            f = Dot(axes=[self.rank-1, self.rank-2])([theta, phi])
             f = Activation('softmax')(f)
 
         # g path
-        g = self._convND(ip, rank, self.intermediate_dim)
+        g = self._convND(ip, self.intermediate_dim)
         g = Reshape((-1, self.intermediate_dim))(g)
-
-        if self.compression > 1 and self.mode == 'embedded':
-            # shielded computation
-            g = MaxPool1D(self.compression)(g)
+        if self.mode == 'embedded':
+            g = self.subsampling_trick(g)
 
         # compute output path
-        y = dot([f, g], axes=[2, 1])
+        y = Dot(axes=[self.rank-1, self.rank-2])([f, g])
 
         # reshape to input tensor format
-        if rank == 3:
+        if self.rank == 3:
             y = Reshape((dims, self.intermediate_dim))(y)
         else:
             if channel_dim == -1:
@@ -132,16 +123,24 @@ class NonLocalBlock:
                 y = Reshape((self.intermediate_dim, *dims))(y)
 
         # project filters
-        y = self._convND(y, rank, channels)
+        y = self._convND(y, channels)
 
         # residual connection
         if self.add_residual:
-            y = add([ip, y])
+            y = Add()([ip, y])
 
         return y
     
+    def transpose_xj(self, xj): return Permute((self.rank-1, self.rank-2))(xj)
 
-    def _convND(self, ip, rank, channels):
+    def subsampling_trick(self, x):
+        # Subsampling trick for a more sparse computation (Wang et. al 2018)
+        print('compression', self.compression)
+        if self.compression > 1:
+            x = MaxPool1D(pool_size=self.compression, strides=self.strides)(x)  # Apply compression as max pooling
+        return x
+
+    def _convND(self, ip, channels):
         """
         Applies a convolution operation based on the rank of the input tensor.
 
@@ -152,17 +151,15 @@ class NonLocalBlock:
         ----------
         ip: array
             Input tensor.
-        rank: int
-            Rank of the input tensor. Must be 3, 4, or 5.
         channels: int 
             Number of output channels for the convolution.
         """
             
-        assert rank in [3, 4, 5], "Rank of input must be 3, 4 or 5"
+        assert self.rank in [3, 4, 5], "Rank of input must be 3, 4 or 5"
 
-        if rank == 3:
+        if self.rank == 3:
             x = Conv1D(channels, 1, padding='same', use_bias=False, kernel_initializer='he_normal')(ip)
-        elif rank == 4:
+        elif self.rank == 4:
             x = Conv2D(channels, (1, 1), padding='same', use_bias=False, kernel_initializer='he_normal')(ip)
         else:
             x = Conv3D(channels, (1, 1, 1), padding='same', use_bias=False, kernel_initializer='he_normal')(ip)
