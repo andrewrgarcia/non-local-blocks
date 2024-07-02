@@ -20,10 +20,10 @@ class NonLocalBlock(nn.Module):
 
         # Instantiate convolution layers here to be used in the forward method
         self.rank = len(input_shape)
-        self.conv_layers['theta'] = self._create_conv_layer(self.intermediate_dim)
-        self.conv_layers['phi'] = self._create_conv_layer(self.intermediate_dim)
-        self.conv_layers['g'] = self._create_conv_layer(self.intermediate_dim)
-        self.conv_layers['final'] = self._create_conv_layer(channels)
+        self.conv_layers['theta'] = self._create_conv_layer(channels, self.intermediate_dim)
+        self.conv_layers['phi'] = self._create_conv_layer(channels, self.intermediate_dim)
+        self.conv_layers['g'] = self._create_conv_layer(channels, self.intermediate_dim)
+        self.conv_layers['final'] = self._create_conv_layer(self.intermediate_dim, channels)
 
     def forward(self, inputs):
         # Use the convolution layers created in build
@@ -49,21 +49,28 @@ class NonLocalBlock(nn.Module):
 
     def _instantiate_f(self, channels, theta, phi, inputs):
         if self.mode == 'gaussian':
-            xi = inputs.view(inputs.size(0), -1, channels)
-            xj = inputs.view(inputs.size(0), -1, channels).permute(0, 2, 1)
-            f = torch.matmul(xi, xj)
+            xi = inputs.view(inputs.size(0), channels, -1)
+            xj = inputs.view(inputs.size(0), channels, -1).permute(0, 2, 1)
+            f = self._einsum_dot(xi, xj)
             f = F.softmax(f, dim=-1)
         elif self.mode == 'dot':
-            theta = theta.view(theta.size(0), -1, self.intermediate_dim)
-            phi = phi.view(phi.size(0), -1, self.intermediate_dim).permute(0, 2, 1)
-            f = torch.matmul(theta, phi)
+            theta = theta.view(theta.size(0), self.intermediate_dim, -1)
+            phi = phi.view(phi.size(0), self.intermediate_dim, -1).permute(0, 2, 1)
+            f = self._einsum_dot(theta, phi)
             f = (1. / float(f.size(-1))) * f
             f = F.softmax(f, dim=-1)
         elif self.mode == 'embedded':
-            theta = theta.view(theta.size(0), -1, self.intermediate_dim)
-            phi = phi.view(phi.size(0), -1, self.intermediate_dim)
-            phi = self.subsampling_trick(phi).permute(0, 2, 1)
-            f = torch.matmul(theta, phi)
+            theta = theta.view(theta.size(0), self.intermediate_dim, -1)
+            phi = phi.view(phi.size(0), self.intermediate_dim, -1).permute(0, 2, 1)
+            phi = self.subsampling_trick(phi)
+            
+            print(f"Shape of theta: {theta.shape}")
+            print(f"Shape of phi: {phi.shape}")
+            
+            f = self._einsum_dot(theta, phi)
+            
+            print(f"Shape of f: {f.shape}")
+            
             f = F.softmax(f, dim=-1)
         else:
             raise NotImplementedError('Concatenate mode has not been implemented yet')
@@ -71,9 +78,11 @@ class NonLocalBlock(nn.Module):
         return f
 
     def _handle_g(self, g):
-        g = g.view(g.size(0), -1, self.intermediate_dim)
+        g = g.view(g.size(0), self.intermediate_dim, -1)
         if self.mode == 'embedded':
-            g = self.subsampling_trick(g)
+            g = self.subsampling_trick(g.permute(0, 2, 1)).permute(0, 2, 1)
+        print(f"Shape of g: {g.shape}")
+
         return g
 
     def subsampling_trick(self, x):
@@ -92,11 +101,16 @@ class NonLocalBlock(nn.Module):
             y = y + inputs
         return y
 
-    def _create_conv_layer(self, channels):
+    def _create_conv_layer(self, in_channels, out_channels):
         if self.rank == 3:
-            return nn.Conv1d(channels, 1, kernel_size=1, padding='same', bias=False)
+            return nn.Conv1d(in_channels, out_channels, kernel_size=1, padding=0, bias=False)
         elif self.rank == 4:
-            return nn.Conv2d(channels, 1, kernel_size=1, padding='same', bias=False)
+            return nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0, bias=False)
         elif self.rank == 5:
-            return nn.Conv3d(channels, 1, kernel_size=1, padding='same', bias=False)
+            return nn.Conv3d(in_channels, out_channels, kernel_size=1, padding=0, bias=False)
 
+    def _einsum_dot(self, x, y):
+        """
+        Explicit einsum strings for dot product across different ranks.
+        """
+        return torch.einsum('bic,bcj->bij', x, y)
