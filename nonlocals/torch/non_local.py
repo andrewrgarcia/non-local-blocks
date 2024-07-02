@@ -51,12 +51,12 @@ class NonLocalBlock(nn.Module):
         if self.mode == 'gaussian':
             xi = inputs.view(inputs.size(0), channels, -1)
             xj = inputs.view(inputs.size(0), channels, -1).permute(0, 2, 1)
-            f = self._einsum_dot(xi, xj)
+            f = torch.einsum('bic,bcj->bij', xi, xj)
             f = F.softmax(f, dim=-1)
         elif self.mode == 'dot':
             theta = theta.view(theta.size(0), self.intermediate_dim, -1)
             phi = phi.view(phi.size(0), self.intermediate_dim, -1).permute(0, 2, 1)
-            f = self._einsum_dot(theta, phi)
+            f = torch.einsum('bic,bcj->bij', theta, phi)
             f = (1. / float(f.size(-1))) * f
             f = F.softmax(f, dim=-1)
         elif self.mode == 'embedded':
@@ -66,9 +66,7 @@ class NonLocalBlock(nn.Module):
             
             print(f"Shape of theta: {theta.shape}")
             print(f"Shape of phi: {phi.shape}")
-            
-            f = self._einsum_dot(theta, phi)
-            
+            f = torch.einsum('bic,bcj->bij', theta, phi)
             print(f"Shape of f: {f.shape}")
             
             f = F.softmax(f, dim=-1)
@@ -108,9 +106,4 @@ class NonLocalBlock(nn.Module):
             return nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0, bias=False)
         elif self.rank == 5:
             return nn.Conv3d(in_channels, out_channels, kernel_size=1, padding=0, bias=False)
-
-    def _einsum_dot(self, x, y):
-        """
-        Explicit einsum strings for dot product across different ranks.
-        """
-        return torch.einsum('bic,bcj->bij', x, y)
+        
