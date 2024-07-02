@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "nonlocal"
+name = "nonlocals"
 version = "0.1.0"
 description = ""
 authors = ["Andrew Garcia <garcia.gtr@gmail.com>"]
