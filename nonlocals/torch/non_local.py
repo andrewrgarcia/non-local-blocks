@@ -11,6 +11,7 @@ class NonLocalBlock(nn.Module):
         self.mode = mode
         self.add_residual = add_residual
         self.conv_layers = nn.ModuleDict()
+        self.initialized = False
 
     def build(self, input_shape):
         channels = input_shape[1]
@@ -24,9 +25,11 @@ class NonLocalBlock(nn.Module):
         self.conv_layers['phi'] = self._create_conv_layer(channels, self.intermediate_dim)
         self.conv_layers['g'] = self._create_conv_layer(channels, self.intermediate_dim)
         self.conv_layers['final'] = self._create_conv_layer(self.intermediate_dim, channels)
+        self.initialized = True
 
     def forward(self, inputs):
-        # Use the convolution layers created in build
+        if not self.initialized:
+            self.build(inputs.shape)
         theta = self.conv_layers['theta'](inputs)
         phi = self.conv_layers['phi'](inputs)
         g = self.conv_layers['g'](inputs)
